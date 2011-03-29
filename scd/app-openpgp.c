@@ -753,27 +753,6 @@ send_fprtime_if_not_null (ctrl_t ctrl, const char *keyword,
 }
 
 static void
-send_key_data (ctrl_t ctrl, const char *name, 
-               const unsigned char *a, size_t alen)
-{
-  char *buf;
-  
-  buf = bin2hex (a, alen, NULL);
-  if (!buf)
-    {
-      log_error ("memory allocation error in send_key_data\n");
-      return;
-    }
-
-  send_status_info (ctrl, "KEY-DATA",
-                    name, (size_t)strlen(name), 
-                    buf, (size_t)strlen (buf),
-                    NULL, 0);
-  xfree (buf);
-}
-
-
-static void
 send_key_attr (ctrl_t ctrl, app_t app, const char *keyword, int number)
 {                      
   char buffer[200];
@@ -1083,6 +1062,42 @@ retrieve_key_material (FILE *fp, const char *hexkeyid,
 #endif /*GNUPG_MAJOR_VERSION > 1*/
 
 
+#if GNUPG_MAJOR_VERSION > 1
+static gpg_error_t
+cache_public_key (app_t app, int keyno, const unsigned char *m, size_t mlen,
+                  const unsigned char *e, size_t elen)
+{
+  char *keybuf = NULL;
+  char *keybuf_p;
+
+  /* Allocate a buffer to construct the S-expression.  */
+  /* FIXME: We should provide a generalized S-expression creation
+     mechanism. */
+  keybuf = xtrymalloc (50 + 2*35 + mlen + elen + 1);
+  if (!keybuf)
+    {
+      return gpg_error_from_syserror ();
+    }
+
+  sprintf (keybuf, "(10:public-key(3:rsa(1:n%u:", (unsigned int) mlen);
+  keybuf_p = keybuf + strlen (keybuf);
+  memcpy (keybuf_p, m, mlen);
+  keybuf_p += mlen;
+  sprintf (keybuf_p, ")(1:e%u:", (unsigned int)elen);
+  keybuf_p += strlen (keybuf_p);
+  memcpy (keybuf_p, e, elen);
+  keybuf_p += elen;
+  strcpy (keybuf_p, ")))");
+  keybuf_p += strlen (keybuf_p);
+
+  app->app_local->pk[keyno].key = (unsigned char*)keybuf;
+  app->app_local->pk[keyno].keylen = (keybuf_p - keybuf);
+
+  return 0;
+}
+#endif /* GNUPG_MAJOR_VERSION > 1 */
+
+
 /* Get the public key for KEYNO and store it as an S-expresion with
    the APP handle.  On error that field gets cleared.  If we already
    know about the public key we will just return.  Note that this does
@@ -1103,8 +1118,6 @@ get_public_key (app_t app, int keyno)
   size_t buflen, keydatalen, mlen, elen;
   unsigned char *mbuf = NULL;
   unsigned char *ebuf = NULL;
-  char *keybuf = NULL;
-  char *keybuf_p;
 
   if (keyno < 1 || keyno > 3)
     return gpg_error (GPG_ERR_INV_ID);
@@ -1257,29 +1270,7 @@ get_public_key (app_t app, int keyno)
 	}
     }
 
-  /* Allocate a buffer to construct the S-expression.  */
-  /* FIXME: We should provide a generalized S-expression creation
-     mechanism. */
-  keybuf = xtrymalloc (50 + 2*35 + mlen + elen + 1);
-  if (!keybuf)
-    {
-      err = gpg_error_from_syserror ();
-      goto leave;
-    }
-  
-  sprintf (keybuf, "(10:public-key(3:rsa(1:n%u:", (unsigned int) mlen);
-  keybuf_p = keybuf + strlen (keybuf);
-  memcpy (keybuf_p, m, mlen);
-  keybuf_p += mlen;
-  sprintf (keybuf_p, ")(1:e%u:", (unsigned int)elen);
-  keybuf_p += strlen (keybuf_p);
-  memcpy (keybuf_p, e, elen);
-  keybuf_p += elen;
-  strcpy (keybuf_p, ")))");
-  keybuf_p += strlen (keybuf_p);
-  
-  app->app_local->pk[keyno].key = (unsigned char*)keybuf;
-  app->app_local->pk[keyno].keylen = (keybuf_p - keybuf);
+  err = cache_public_key(app, keyno, m, mlen, e, elen);
 
  leave:
   /* Set a flag to indicate that we tried to read the key.  */
@@ -1288,7 +1279,7 @@ get_public_key (app_t app, int keyno)
   xfree (buffer);
   xfree (mbuf);
   xfree (ebuf);
-  return 0;
+  return err;
 }
 #endif /* GNUPG_MAJOR_VERSION > 1 */
 
@@ -2351,7 +2342,7 @@ build_privkey_template (app_t app, int keyno,
 }
 
 
-/* Helper for do_writekley to change the size of a key.  Not ethat
+/* Helper for do_writekey to change the size of a key.  Note that
    this deletes the entire key without asking.  */
 static gpg_error_t
 change_keyattr (app_t app, int keyno, unsigned int nbits,
@@ -2365,7 +2356,7 @@ change_keyattr (app_t app, int keyno, unsigned int nbits,
 
   assert (keyno >=0 && keyno <= 2);
 
-  if (nbits > 3072)
+  if (nbits > 4096)
     return gpg_error (GPG_ERR_TOO_LARGE);
 
   /* Read the current attributes into a buffer.  */
@@ -2783,7 +2774,7 @@ static gpg_error_t
 do_genkey (app_t app, ctrl_t ctrl,  const char *keynostr, unsigned int flags,
            time_t createtime,
            gpg_error_t (*pincb)(void*, const char *, char **),
-           void *pincb_arg)
+           void *pincb_arg, unsigned char **pk, size_t *pklen)
 {
   int rc;
   char numbuf[30];
@@ -2818,12 +2809,9 @@ do_genkey (app_t app, ctrl_t ctrl,  const char *keynostr, unsigned int flags,
   if (rc)
     return rc;
 
-  /* Because we send the key parameter back via status lines we need
-     to put a limit on the max. allowed keysize.  2048 bit will
-     already lead to a 527 byte long status line and thus a 4096 bit
-     key would exceed the Assuan line length limit.  */ 
+  /* Highest size supported by a known card is 4096 */
   keybits = app->app_local->keyattr[keyno].n_bits;
-  if (keybits > 3072)
+  if (keybits > 4096)
     return gpg_error (GPG_ERR_TOO_LARGE);
 
   /* Prepare for key generation by verifying the Admin PIN.  */
@@ -2882,7 +2870,6 @@ do_genkey (app_t app, ctrl_t ctrl,  const char *keynostr, unsigned int flags,
       goto leave;
     }
   /* log_printhex ("RSA n:", m, mlen); */
-  send_key_data (ctrl, "n", m, mlen);
 
   e = find_tlv (keydata, keydatalen, 0x0082, &elen);
   if (!e)
@@ -2892,7 +2879,10 @@ do_genkey (app_t app, ctrl_t ctrl,  const char *keynostr, unsigned int flags,
       goto leave;
     }
   /* log_printhex ("RSA e:", e, elen); */
-  send_key_data (ctrl, "e", e, elen);
+
+  rc = cache_public_key(app, keyno, m, mlen, e, elen);
+  if (rc)
+    goto leave;
 
   created_at = createtime? createtime : gnupg_get_time ();
   sprintf (numbuf, "%lu", (unsigned long)created_at);
@@ -2905,6 +2895,16 @@ do_genkey (app_t app, ctrl_t ctrl,  const char *keynostr, unsigned int flags,
     goto leave;
   send_fpr_if_not_null (ctrl, "KEY-FPR", -1, fprbuf);
 
+  /* Send key as s-exp, since n might not fit in a status line (>3072 bits) */
+  *pklen = app->app_local->pk[keyno].keylen;
+  *pk = xtrymalloc (*pklen);
+  if (!*pk)
+    {
+      rc = gpg_error_from_syserror ();
+      *pklen = 0;
+      goto leave;
+    }
+  memcpy (*pk, app->app_local->pk[keyno].key, *pklen);
 
  leave:
   xfree (buffer);
@@ -3377,6 +3377,8 @@ do_decipher (app_t app, const char *keyidstr,
         fixuplen = 256 - indatalen;
       else if (indatalen >= (384-16) && indatalen < 384) /* 3072 bit key.  */
         fixuplen = 384 - indatalen;
+      else if (indatalen >= (512-16) && indatalen < 512) /* 4096 bit key.  */
+        fixuplen = 512 - indatalen;
       else
         fixuplen = 0;
 

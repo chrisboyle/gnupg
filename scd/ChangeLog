@@ -1,3 +1,21 @@
+2011-03-29  Chris Boyle <chris@boyle.name>
+
+	* app-common.h (app_genkey): New parameters pk, pklen.
+	* app-openpgp.c (send_key_data): Removed send_key_data.
+	(cache_public_key): New, split from get_public_key.
+	(get_public_key): Use cache_public_key. Return err so that a failure
+	to allocate the S-expression buffer would be correctly reported.
+	(change_keyattr): Allow 4096 bits; fix typos in comment.
+	(do_genkey): New parameters pk, pklen, which carry the public key instead
+	of send_key_data. Also call cache_public_key to build the S-exp.
+	(do_decipher): Add fixup case for 4096-bit keys.
+	* app.c (app_genkey): Pass through pk, pklen; fix comment saying SETATTR.
+	* ccid-driver.c: Allow more USB retries (big keys take ages to generate).
+	* command.c: new MAXLEN_CIPHERTEXT defined.
+	(cmd_pkdecrypt): inquire the ciphertext instead of using SETDATA.
+	(cmd_genkey): Receive key s-exp in pk, pklen and send it on as data
+	lines instead of status lines.
+
 2010-03-17  Werner Koch  <wk@g10code.com>
 
 	* command.c (open_card): Return GPG_ERR_NOT_OPERATIONAL if no

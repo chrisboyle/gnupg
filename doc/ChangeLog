@@ -1,3 +1,8 @@
+2011-03-29  Chris Boyle  <chris@boyle.name>
+
+	* scdaemon.texi (GENKEY): Now documented (mostly copy from agent docs).
+	(PKDECRYPT): Update for use of inquiry rather than SETDATA.
+
 2011-01-13  Werner Koch  <wk@g10code.com>
 
 	* FAQ: Make it a static file with a pointer to the online location.

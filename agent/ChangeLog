@@ -1,3 +1,11 @@
+2011-03-29  Chris Boyle  <chris@boyle.name>
+
+	* call-scd.c: new MAXLEN_CIPHERTEXT defined.
+	(struct inq_ciphertext_s): New.
+	(inq_ciphertext): New. Has a pass-through to inq_needpin.
+	(agent_card_pkdecrypt): Use inq_ciphertext, to respond to CIPHERTEXT
+	inquiries as well as NEEDPIN.
+
 2010-11-11  Werner Koch  <wk@g10code.com>
 
 	* agent.h (opt): Add field SIGUSR2_ENABLED.

@@ -3997,12 +3997,13 @@ gen_card_key (int algo, int keyno, int is_primary,
   struct agent_card_genkey_s info;
   PACKET *pkt;
   PKT_secret_key *sk;
-  PKT_public_key *pk;
+  PKT_public_key *pk = 0;
+  gcry_sexp_t s_key;
 
   assert (algo == PUBKEY_ALGO_RSA);
   
   /* Fixme: We don't have the serialnumber available, thus passing NULL. */
-  rc = agent_scd_genkey (&info, keyno, 1, NULL, *timestamp);
+  rc = agent_scd_genkey (&info, keyno, 1, NULL, *timestamp, &s_key);
 /*    if (gpg_err_code (rc) == GPG_ERR_EEXIST) */
 /*      { */
 /*        tty_printf ("\n"); */
@@ -4013,32 +4014,28 @@ gen_card_key (int algo, int keyno, int is_primary,
 /*          rc = agent_scd_genkey (&info, keyno, 1); */
 /*      } */
 
+  if (!rc)
+    {
+      pk = xcalloc (1, sizeof *pk );
+      rc = key_from_sexp (pk->pkey, s_key, "public-key", "ne");
+    }
   if (rc)
     {
       log_error ("key generation failed: %s\n", gpg_strerror (rc));
+      xfree(pk);
       return rc;
-    }
-  if ( !info.n || !info.e )
-    {
-      log_error ("communication error with SCD\n");
-      gcry_mpi_release (info.n);
-      gcry_mpi_release (info.e);
-      return gpg_error (GPG_ERR_GENERAL);
     }
   
   if (*timestamp != info.created_at)
     log_info ("Note that the key does not use the suggested creation date\n");
   *timestamp = info.created_at;
 
-  pk = xcalloc (1, sizeof *pk );
   sk = xcalloc (1, sizeof *sk );
   sk->timestamp = pk->timestamp = info.created_at;
   sk->version = pk->version = 4;
   if (expireval)
       sk->expiredate = pk->expiredate = pk->timestamp + expireval;
   sk->pubkey_algo = pk->pubkey_algo = algo;
-  pk->pkey[0] = info.n;
-  pk->pkey[1] = info.e; 
   sk->skey[0] = gcry_mpi_copy (pk->pkey[0]);
   sk->skey[1] = gcry_mpi_copy (pk->pkey[1]);
   sk->skey[2] = gcry_mpi_set_opaque (NULL, xstrdup ("dummydata"), 10*8);

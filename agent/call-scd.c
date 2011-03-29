@@ -50,6 +50,9 @@
 #define ASSUAN_CONVEY_COMMENTS 4
 #endif
 
+/* Maximum allowed size of the inquired ciphertext.  */
+#define MAXLEN_CIPHERTEXT 4096
+
 
 /* Definition of module local data of the CTRL structure.  */
 struct scd_local_s
@@ -90,6 +93,14 @@ struct inq_needpin_s
   void *getpin_cb_arg;
   assuan_context_t passthru;  /* If not NULL, pass unknown inquiries
                                  up to the caller.  */
+};
+
+struct inq_ciphertext_s
+{
+  assuan_context_t ctx;
+  const unsigned char *ciphertext;
+  size_t ciphertextlen;
+  struct inq_needpin_s needpin;
 };
 
 
@@ -877,6 +888,26 @@ agent_card_pksign (ctrl_t ctrl,
   return unlock_scd (ctrl, 0);
 }
 
+/* Handle a CIPHERTEXT inquiry.  Note, we only send the data,
+   assuan_transact takes care of flushing and writing the END. */
+static gpg_error_t
+inq_ciphertext (void *opaque, const char *line)
+{
+  struct inq_ciphertext_s *parm = opaque;
+  int rc;
+
+  if (!strncmp (line, "CIPHERTEXT", 10) && (line[10]==' '||!line[10]))
+    {
+      assuan_begin_confidential (parm->ctx);
+      rc = assuan_send_data (parm->ctx, parm->ciphertext, parm->ciphertextlen);
+      assuan_end_confidential (parm->ctx);
+    }
+  else
+    rc = inq_needpin (&parm->needpin, line);
+
+  return rc;
+}
+
 /* Decipher INDATA using the current card. Note that the returned value is */
 int
 agent_card_pkdecrypt (ctrl_t ctrl,
@@ -886,10 +917,10 @@ agent_card_pkdecrypt (ctrl_t ctrl,
                       const unsigned char *indata, size_t indatalen,
                       char **r_buf, size_t *r_buflen)
 {
-  int rc, i;
-  char *p, line[ASSUAN_LINELENGTH];
+  int rc;
+  char line[ASSUAN_LINELENGTH];
   membuf_t data;
-  struct inq_needpin_s inqparm;
+  struct inq_ciphertext_s ctparm;
   size_t len;
 
   *r_buf = NULL;
@@ -901,25 +932,19 @@ agent_card_pkdecrypt (ctrl_t ctrl,
   if (indatalen*2 + 50 > DIM(line))
     return unlock_scd (ctrl, gpg_error (GPG_ERR_GENERAL));
 
-  sprintf (line, "SETDATA ");
-  p = line + strlen (line);
-  for (i=0; i < indatalen ; i++, p += 2 )
-    sprintf (p, "%02X", indata[i]);
-  rc = assuan_transact (ctrl->scd_local->ctx, line,
-                        NULL, NULL, NULL, NULL, NULL, NULL);
-  if (rc)
-    return unlock_scd (ctrl, rc);
-
   init_membuf (&data, 1024);
-  inqparm.ctx = ctrl->scd_local->ctx;
-  inqparm.getpin_cb = getpin_cb;
-  inqparm.getpin_cb_arg = getpin_cb_arg;
-  inqparm.passthru = 0;
+  ctparm.ctx = ctrl->scd_local->ctx;
+  ctparm.ciphertext = indata;
+  ctparm.ciphertextlen = indatalen;
+  ctparm.needpin.ctx = ctrl->scd_local->ctx;
+  ctparm.needpin.getpin_cb = getpin_cb;
+  ctparm.needpin.getpin_cb_arg = getpin_cb_arg;
+  ctparm.needpin.passthru = 0;
   snprintf (line, DIM(line)-1, "PKDECRYPT %s", keyid);
   line[DIM(line)-1] = 0;
   rc = assuan_transact (ctrl->scd_local->ctx, line,
                         membuf_data_cb, &data,
-                        inq_needpin, &inqparm,
+                        inq_ciphertext, &ctparm,
                         NULL, NULL);
   if (rc)
     {

@@ -46,6 +46,9 @@
 /* Maximum allowed size of key data as used in inquiries. */
 #define MAXLEN_KEYDATA 4096
 
+/* Maximum allowed size of the inquired ciphertext.  */
+#define MAXLEN_CIPHERTEXT 4096
+
 /* Maximum allowed size of certificate data as used in inquiries. */
 #define MAXLEN_CERTDATA 16384
 
@@ -1016,6 +1019,8 @@ cmd_pkdecrypt (assuan_context_t ctx, char *line)
 {
   ctrl_t ctrl = assuan_get_pointer (ctx);
   int rc;
+  unsigned char *indata;
+  size_t indatalen;
   unsigned char *outdata;
   size_t outdatalen;
   char *keyidstr;
@@ -1029,11 +1034,18 @@ cmd_pkdecrypt (assuan_context_t ctx, char *line)
   keyidstr = xtrystrdup (line);
   if (!keyidstr)
     return out_of_core ();
+
+  /* First inquire the data to decrypt */
+  rc = assuan_inquire (ctx, "CIPHERTEXT",
+                       &indata, &indatalen, MAXLEN_CIPHERTEXT);
+  if (rc)
+    return rc;
   rc = app_decipher (ctrl->app_ctx,
                      keyidstr, 
                      pin_cb, ctx,
-                     ctrl->in_data.value, ctrl->in_data.valuelen,
+                     indata, indatalen,
                      &outdata, &outdatalen);
+  xfree (indata);
 
   xfree (keyidstr);
   if (rc)
@@ -1283,7 +1295,9 @@ static const char hlp_genkey[] =
   "\n"
   "  S KEY-FPR  <hexstring>\n"
   "  S KEY-CREATED-AT <seconds_since_epoch>\n"
-  "  S KEY-DATA [p|n] <hexdata>\n"
+  "\n"
+  "The public key is sent as an S-expression using data lines, in\n"
+  "the same format as READKEY.\n"
   "\n"
   "--force is required to overwrite an already existing key.  The\n"
   "KEY-CREATED-AT is required for further processing because it is\n"
@@ -1304,6 +1318,8 @@ cmd_genkey (assuan_context_t ctx, char *line)
   int force;
   const char *s;
   time_t timestamp;
+  unsigned char *pk;
+  size_t pklen;
 
   if ( IS_LOCKED (ctrl) )
     return gpg_error (GPG_ERR_LOCKED);
@@ -1340,7 +1356,13 @@ cmd_genkey (assuan_context_t ctx, char *line)
   if (!keyno)
     return out_of_core ();
   rc = app_genkey (ctrl->app_ctx, ctrl, keyno, force? 1:0,
-                   timestamp, pin_cb, ctx);
+                   timestamp, pin_cb, ctx, &pk, &pklen);
+  if (!rc)
+    { /* Yeah, got that key - send it back.  */
+      rc = assuan_send_data (ctx, pk, pklen);
+      xfree (pk);
+    }
+
   xfree (keyno);
 
   TEST_CARD_REMOVAL (ctrl, rc);

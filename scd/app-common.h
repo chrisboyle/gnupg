@@ -111,7 +111,7 @@ struct app_ctx_s {
                            const char *keynostr, unsigned int flags,
                            time_t createtime,
                            gpg_error_t (*pincb)(void*, const char *, char **),
-                           void *pincb_arg);
+                           void *pincb_arg, unsigned char **pk, size_t *pklen);
     gpg_error_t (*change_pin) (app_t app, ctrl_t ctrl,
                        const char *chvnostr, unsigned int flags,
                        gpg_error_t (*pincb)(void*, const char *, char **),
@@ -190,7 +190,7 @@ gpg_error_t app_genkey (app_t app, ctrl_t ctrl,
                         const char *keynostr, unsigned int flags,
                         time_t createtime,
                         gpg_error_t (*pincb)(void*, const char *, char **),
-                        void *pincb_arg);
+                        void *pincb_arg, unsigned char **pk, size_t *pklen);
 gpg_error_t app_get_challenge (app_t app, size_t nbytes,
                                unsigned char *buffer);
 gpg_error_t app_change_pin (app_t app, ctrl_t ctrl,

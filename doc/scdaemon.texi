@@ -559,18 +559,24 @@ With @var{algoname} are one of @code{sha1}, @code{rmd160} or @code{md5}.
 To decrypt some data the caller should use the command
 
 @example
- SETDATA @var{hexstring}
-@end example
-
-to tell @command{scdaemon} about the data to be decrypted.  The data
-must be given in hex notation.  The actual decryption is then done
-using the command
-
-@example
   PKDECRYPT @var{keyid}
 @end example
 
 where @var{keyid} is the hexified ID of the key to be used.
+
+@command{scdaemon} checks whether this command is allowed and then does an
+INQUIRY to get the ciphertext the client should then send the cipher
+text.
+
+@example
+    S: INQUIRE CIPHERTEXT
+    C: D xxxxxx
+    C: D xxxx
+    C: END
+@end example
+
+If the decryption was successful the decrypted data is returned by
+means of "D" lines.
 
 
 @node Scdaemon GETATTR
@@ -605,7 +611,54 @@ actual card application.
 @node Scdaemon GENKEY
 @subsection Generate a new key on-card.
 
-TO BE WRITTEN.
+This is used to create a new keypair on the card. The private key is not
+returned and there is (hopefully) no way to extract it from the card.
+
+@example
+   GENKEY
+@end example
+
+Invokes the key generation process and the server will then inquire
+on the generation parameters, like:
+
+@example
+   S: INQUIRE KEYPARM
+   C: D (genkey (rsa (nbits  1024)))
+   C: END
+@end example
+
+The format of the key parameters which depends on the algorithm is of
+the form:
+
+@example
+    (genkey
+      (algo
+        (parameter_name_1 ....)
+          ....
+        (parameter_name_n ....)))
+@end example
+
+If everything succeeds, the server returns the *public key* in a SPKI
+like S-Expression like this:
+
+@example
+     (public-key
+       (rsa
+         (n <mpi>)
+         (e <mpi>)))
+@end example
+
+Here is an example session:
+
+@example
+   C: GENKEY
+   S: INQUIRE KEYPARM
+   C: D (genkey (rsa (nbits  1024)))
+   C: END
+   S: D (public-key
+   S: D   (rsa (n 326487324683264) (e 10001)))
+   S  OK key created
+@end example
 
 @node Scdaemon RANDOM
 @subsection Return random bytes generate on-card.

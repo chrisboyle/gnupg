@@ -701,7 +701,6 @@ scd_genkey_cb (void *opaque, const char *line)
   struct agent_card_genkey_s *parm = opaque;
   const char *keyword = line;
   int keywordlen;
-  gpg_error_t rc;
 
   for (keywordlen=0; *line && !spacep (line); line++, keywordlen++)
     ;
@@ -711,29 +710,6 @@ scd_genkey_cb (void *opaque, const char *line)
   if (keywordlen == 7 && !memcmp (keyword, "KEY-FPR", keywordlen))
     {
       parm->fprvalid = unhexify_fpr (line, parm->fpr);
-    }
-  else if (keywordlen == 8 && !memcmp (keyword, "KEY-DATA", keywordlen))
-    {
-      gcry_mpi_t a;
-      const char *name = line;
-
-      while (*line && !spacep (line))
-        line++;
-      while (spacep (line))
-        line++;
-
-      rc = gcry_mpi_scan (&a, GCRYMPI_FMT_HEX, line, 0, NULL);
-      if (rc)
-        log_error ("error parsing received key data: %s\n", gpg_strerror (rc));
-      else if (*name == 'n' && spacep (name+1))
-        parm->n = a;
-      else if (*name == 'e' && spacep (name+1))
-        parm->e = a;
-      else
-        {
-          log_info ("unknown parameter name in received key data\n");
-          gcry_mpi_release (a);
-        }
     }
   else if (keywordlen == 14 && !memcmp (keyword,"KEY-CREATED-AT", keywordlen))
     {
@@ -747,6 +723,18 @@ scd_genkey_cb (void *opaque, const char *line)
   return 0;
 }
 
+
+static gpg_error_t
+membuf_data_cb (void *opaque, const void *buffer, size_t length)
+{
+  membuf_t *data = opaque;
+
+  if (buffer)
+    put_membuf (data, buffer, length);
+  return 0;
+}
+
+
 /* Send a GENKEY command to the SCdaemon.  SERIALNO is not used in
    this implementation.  If CREATEDATE has been given, it will be
    passed to SCDAEMON so that the key can be created with this
@@ -754,11 +742,14 @@ scd_genkey_cb (void *opaque, const char *line)
    versions of scddaemon don't support this option.  */
 int
 agent_scd_genkey (struct agent_card_genkey_s *info, int keyno, int force,
-                  const char *serialno, u32 createtime)
+                  const char *serialno, u32 createtime, gcry_sexp_t *r_pubkey)
 {
   int rc;
   char line[ASSUAN_LINELENGTH];
   gnupg_isotime_t tbuf;
+  membuf_t data;
+  unsigned char *buf;
+  size_t len;
 
   (void)serialno;
 
@@ -779,11 +770,26 @@ agent_scd_genkey (struct agent_card_genkey_s *info, int keyno, int force,
   line[DIM(line)-1] = 0;
 
   memset (info, 0, sizeof *info);
+  init_membuf_secure (&data, 1024);
   rc = assuan_transact (agent_ctx, line,
-                        NULL, NULL, default_inq_cb, NULL,
+                        membuf_data_cb, &data, default_inq_cb, NULL,
                         scd_genkey_cb, info);
   
   status_sc_op_failure (rc);
+
+  if (rc)
+    {
+      xfree (get_membuf (&data, &len));
+    }
+  else
+    {
+      buf = get_membuf (&data, &len);
+      if (!buf)
+        return gpg_error_from_syserror ();
+      rc = gcry_sexp_sscan (r_pubkey, NULL, buf, len);
+      xfree (buf);
+    }
+
   return rc;
 }
 
@@ -882,17 +888,6 @@ select_openpgp (const char *serialno)
 
 
 
-static gpg_error_t
-membuf_data_cb (void *opaque, const void *buffer, size_t length)
-{
-  membuf_t *data = opaque;
-
-  if (buffer)
-    put_membuf (data, buffer, length);
-  return 0;
-}
-  
-
 /* Helper returning a command option to describe the used hash
    algorithm.  See scd/command.c:cmd_pksign.  */
 static const char *
@@ -972,6 +967,25 @@ agent_scd_pksign (const char *serialno, int hashalgo,
   return rc;
 }
 
+/* Handle a CIPHERTEXT inquiry.  Note, we only send the data,
+   assuan_transact talkes care of flushing and writing the end */
+static gpg_error_t
+inq_ciphertext_cb (void *opaque, const char *line)
+{
+  struct cipher_parm_s *parm = opaque;
+  int rc;
+
+  if (!strncmp (line, "CIPHERTEXT", 10) && (line[10]==' '||!line[10]))
+    {
+      assuan_begin_confidential (parm->ctx);
+      rc = assuan_send_data (parm->ctx, parm->ciphertext, parm->ciphertextlen);
+      assuan_end_confidential (parm->ctx);
+    }
+  else
+    rc = default_inq_cb (parm->ctx, line);
+
+  return rc;
+}
 
 /* Decrypt INDATA of length INDATALEN using the card identified by
    SERIALNO.  Return the plaintext in a nwly allocated buffer stored
@@ -984,10 +998,11 @@ agent_scd_pkdecrypt (const char *serialno,
                      const unsigned char *indata, size_t indatalen,
                      unsigned char **r_buf, size_t *r_buflen)
 {
-  int rc, i;
-  char *p, line[ASSUAN_LINELENGTH];
+  int rc;
+  char line[ASSUAN_LINELENGTH];
   membuf_t data;
   size_t len;
+  struct cipher_parm_s ctparm;
 
   *r_buf = NULL;
   rc = start_agent (1);
@@ -998,13 +1013,16 @@ agent_scd_pkdecrypt (const char *serialno,
     return rc;
 
   /* FIXME: use secure memory where appropriate */
+#if 0
   if (indatalen*2 + 50 > DIM(line))
     return gpg_error (GPG_ERR_GENERAL);
+#endif
 
   rc = select_openpgp (serialno);
   if (rc)
     return rc;
   
+#if 0
   sprintf (line, "SCD SETDATA ");
   p = line + strlen (line);
   for (i=0; i < indatalen ; i++, p += 2 )
@@ -1012,13 +1030,17 @@ agent_scd_pkdecrypt (const char *serialno,
   rc = assuan_transact (agent_ctx, line, NULL, NULL, NULL, NULL, NULL, NULL);
   if (rc)
     return rc;
+#endif
 
+  ctparm.ctx = agent_ctx;
+  ctparm.ciphertext = indata;
+  ctparm.ciphertextlen = indatalen;
   init_membuf (&data, 1024);
   snprintf (line, DIM(line)-1, "SCD PKDECRYPT %s", serialno);
   line[DIM(line)-1] = 0;
   rc = assuan_transact (agent_ctx, line,
                         membuf_data_cb, &data,
-                        default_inq_cb, NULL, NULL, NULL);
+                        inq_ciphertext_cb, &ctparm, NULL, NULL);
   if (rc)
     {
       xfree (get_membuf (&data, &len));

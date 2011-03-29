@@ -1931,7 +1931,7 @@ bulk_in (ccid_driver_t handle, unsigned char *buffer, size_t length,
         {
           rc = errno;
           DEBUGOUT_1 ("usb_bulk_read error: %s\n", strerror (rc));
-          if (rc == EAGAIN && eagain_retries++ < 3)
+          if (rc == EAGAIN && eagain_retries++ < 12)
             {
               my_sleep (1);
               goto retry;

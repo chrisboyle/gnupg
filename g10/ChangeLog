@@ -1,3 +1,13 @@
+2011-03-29  Chris Boyle  <chris@boyle.name>
+
+	* call-agent.c (scd_genkey_cb): Remove handling of KEY-DATA status.
+	(membuf_data_cb): Move higher than agent_scd_genkey.
+	(agent_scd_genkey): Receive key in data lines (instead of status lines).
+	* call-agent.h (agent_scd_genkey): New parameter r_pubkey.
+	* card-util.c (ask_card_keysize): Allow 4096-bit keys.
+	* keygen.c (gen_card_key): Parse s-expression key data instead of
+	looking in info.n, info.e.
+
 2011-01-10  Werner Koch  <wk@g10code.com>
 
 	* keygen.c (ask_user_id): Fix duplicate test for AMAIL by correct
